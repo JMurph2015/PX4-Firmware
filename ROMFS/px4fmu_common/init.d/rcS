@@ -42,6 +42,7 @@ set MIXER_FILE none
 set MK_MODE none
 set MKBLCTRL_ARG ""
 set OUTPUT_MODE none
+set PARAM_DEFAULTS_VER 1
 set PARAM_FILE /fs/microsd/params
 set PWM_AUX_DISARMED p:PWM_AUX_DISARMED
 set PWM_AUX_MAX p:PWM_AUX_MAX
@@ -161,7 +162,12 @@ else
 		param reset_nostart RC* COM_FLTMODE* LND_FLIGHT_T_* TC_* CAL_ACC* CAL_GYRO*
 		set AUTOCNF yes
 	else
-		set AUTOCNF no
+		if param compare SYS_AUTOCONFIG 2
+		then
+			set AUTOCNF yes
+		else
+			set AUTOCNF no
+		fi
 	fi
 
 	#
@@ -480,6 +486,16 @@ else
 	#
 	sh /etc/init.d/rc.logging
 
+
+	if ! param compare SYS_PARAM_VER ${PARAM_DEFAULTS_VER}
+	then
+		echo "Switched to different parameter version. Resetting parameters."
+		param set SYS_PARAM_VER ${PARAM_DEFAULTS_VER}
+		param set SYS_AUTOCONFIG 2
+		param save
+		reboot
+	fi
+
 #
 # End of autostart.
 #
@@ -510,6 +526,7 @@ unset MIXER_FILE
 unset MK_MODE
 unset MKBLCTRL_ARG
 unset OUTPUT_MODE
+unset PARAM_DEFAULTS_VER
 unset PARAM_FILE
 unset PWM_AUX_DISARMED
 unset PWM_AUX_MAX
