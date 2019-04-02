@@ -57,7 +57,7 @@ docker run -it --rm -w "${SRC_DIR}" \
 	--env=CI \
 	--env=CODECOV_TOKEN \
 	--env=COVERALLS_REPO_TOKEN \
-	--env=LOCAL_USER_ID="$(id -u)" \
+	--env=LOCAL_USER_ID="$(id -u $(logname))" \
 	--env=PX4_ASAN \
 	--env=PX4_MSAN \
 	--env=PX4_TSAN \
