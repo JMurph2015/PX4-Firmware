@@ -54,14 +54,18 @@
 
 #include "board_config.h"
 
+#include <drivers/device/ringbuffer.h>
+#include <uORB/topics/debug_key_value.h>
+#include <uORB/uORB.h>
+
 #define ARDUINO_BUS PX4_I2C_BUS_EXPANSION
 #define ARDUINO_ADDR0 0x72
 #define ARDUINO_ADDR1 0x73
 
 #define ARDUINO_IOCTL_RESET 0x0
+#define ARDUINO_IOCTL_SELF_CHECK 0x0
 
 #define ARDUINO_BASE_PATH "/dev/arduino"
-
 
 class Arduino : public device::I2C {
 public:
@@ -78,54 +82,97 @@ protected:
 private:
   orb_advert_t _orb_handle;
 
+  int _reset();
+  int _self_check();
+
 }
 
 Arduino::Arduino(int address)
-    : I2C("Arduino", ARDUINO_DEVICE_PATH, bus, address, 400000) {
+    : I2C("Arduino", ARDUINO_BASE_PATH, bus, address, 400000),
+      _orb_handle(nullptr) {
 }
 
-int Arduino::init() { return I2C::init(); }
+int Arduino::init() {
+  if (_orb_handle == nullptr) {
+    struct debug_key_value_s report = {};
+    _orb_handle = orb_advertise(ORB_ID(debug_key_value), &report);
+  }
+  if (_orb_handle == nullptr) {
+    return PX4_ERROR;
+  }
+  return I2C::init();
+}
 
-ssize_t read(device::file_t *filp, char *buffer, size_t buflen) {
+ssize_t read(char *buffer, size_t buflen) {
   float vals[4] = {0.0, 0.0, 0.0, 0.0};
 
-  ret = transfer(nullptr, 0, &val[0], 4*sizeof(float));
+  ret = transfer(nullptr, 0, &val[0], 4 * sizeof(float));
 
   if (ret < 0) {
     DEVICE_DEBUG("error reading from sensor: %d", ret);
     return ret;
   }
 
-  struct sensor_arduino_s report;
-  report.timestamp = hrt_absolute_time();
-  report.rpm0 = vals[0];
-  report.rpm1 = vals[1];
-  report.temp0 = vals[2];
-  report.temp1 = vals[3];
+  struct debug_key_value_s report0 = {.key = "rpm0", .value = vals[0]};
+  struct debug_key_value_s report1 = {.key = "rpm1", .value = vals[1]};
+  struct debug_key_value_s report2 = {.key = "temp0", .value = vals[2]};
+  struct debug_key_value_s report3 = {.key = "temp1", .value = vals[3]};
+  // report.timestamp = hrt_absolute_time();
 
   if (_orb_handle != nullptr) {
-    orb_publish(ORB_ID(sensor_arduino), _orb_handle, &report);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report0);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
   }
 
-  ret = OK;
+  ret = PX4_OK;
 
   return ret;
 }
 
-int ioctl(device::file_t *filep, int cmd, unsigned long arg) {
+int Arduino::ioctl(int cmd, unsigned long arg) {
   int ret = PX4_OK;
   switch (operation) {
   case ARDUINO_IOCTL_RESET:
-    // ret = _reset();
-    // TODO add reset command to send over the I2C line
-    // something like
-    // char cmd = ARDUINO_IOCTL_RESET;
-    // ret = transfer(&cmd, 1, nullptr, 0)
+    ret = _reset();
     break;
+  case ARDUINO_IOCTL_SELF_CHECK:
+    ret = _self_check();
+    char wire_cmd = ARDUINO_IOCTL_RESET;
+    ret = transfer(&wire_cmd, 1, nullptr, 0);
   }
+  return ret;
 }
 
-int probe() {
+int Arduino::probe() {
+  int result1 = ioctl(ARDUINO_IOCTL_RESET, 0);
+  if (result1 != PX4_OK) {
+    return result1;
+  }
+  int result2 = ioctl(ARDUINO_IOCTL_SELF_CHECK, 0);
+  if (result2 != PX4_OK) {
+    return result2;
+  }
+  return PX4_OK;
+}
+
+int Arduino::_reset() {
   int ret = PX4_OK;
+  char wire_md = ARDUINO_IOCTL_RESET;
+  int ret2 = transfer(&wire_cmd 1, nullptr, 0);
+  if (ret2 < 0) {
+      ret = PX4_ERROR;
+  }
+  return ret;
+}
+
+int Arduino::_self_check() {
+  int ret = PX4_OK;
+  char wire_md = ARDUINO_IOCTL_SELF_CHECK;
+  int ret2 = transfer(&wire_cmd 1, nullptr, 0);
+  if (ret2 < 0) {
+      ret = PX4_ERROR;
+  }
   return ret;
 }
