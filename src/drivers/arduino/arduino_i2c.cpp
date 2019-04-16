@@ -53,14 +53,14 @@
 #include <arch/board/board.h>
 
 #include <drivers/drv_hrt.h>
-#include <drivers/drv_sensor.h>
 #include <drivers/drv_orb_dev.h>
+#include <drivers/drv_sensor.h>
 #include <sys/ioctl.h>
 
-#include <uORB/uORB.h>
+#include <uORB/topics/debug_key_value.h>
 #include <uORB/topics/debug_value.h>
 #include <uORB/topics/debug_vect.h>
-#include <uORB/topics/debug_key_value.h>
+#include <uORB/uORB.h>
 
 #include "board_config.h"
 
@@ -75,6 +75,15 @@
 
 #define ARDUINO_BASE_PATH "/dev/arduino"
 
+/**
+ * A driver to collect data from an Arduino connected over
+ * I2C
+ *
+ * This is to allow custom sensor integration like PWM RPM
+ * sensors that are trivial to read from an Arduino but
+ * hard to read into a PixHawk
+ *
+ */
 class Arduino : public device::I2C {
 public:
   Arduino(int address = ARDUINO_ADDR0);
@@ -96,10 +105,24 @@ private:
 
 extern "C" __EXPORT int arduino_main(int argc, char *argv[]);
 
+/**
+ * Constructor for the Arduino driver state object.
+ *
+ * All this really does is set the variables and call the I2C
+ * constructor
+ *
+ */
 Arduino::Arduino(int address)
     : I2C("Arduino", ARDUINO_BASE_PATH, ARDUINO_BUS, address, 400000),
       _orb_handle(nullptr) {}
 
+/**
+ * This initializes the driver by advertising on uOrb and calling
+ * I2C::init()
+ *
+ * This shouldn't be doing anything fancy for the time being.
+ *
+ */
 int Arduino::init() {
   if (_orb_handle == nullptr) {
     struct debug_key_value_s report = {};
@@ -111,10 +134,23 @@ int Arduino::init() {
   return I2C::init();
 }
 
+/**
+ * Read implementation for the Arduino driver
+ *
+ * This reads a set of measurements from the Arduino
+ * and reports these via debug messages.  It will probably
+ * need to have some extra logic to prime the Arduino for reading
+ * measurements as opposed to health check etc.
+ *
+ */
 ssize_t Arduino::read(char *buffer, size_t buflen) {
   uint8_t raw_vals[8] = {0};
   int ret = transfer(nullptr, 0, &raw_vals[0], 4 * sizeof(float));
 
+  // This is a dirty hack to facilitate transferring floats over
+  // an iterface that works on bytes.  The float array is just
+  // cast to a byte array and set over the wire where it is
+  // then cast back into a float array from a byte array.
   float *vals = (float *)raw_vals;
 
   if (ret < 0) {
@@ -167,6 +203,14 @@ ssize_t Arduino::read(char *buffer, size_t buflen) {
   return ret;
 }
 
+/**
+ * IOCTL implementation for the Arduino driver
+ *
+ * This method mostly just matches on command inputs and
+ * uses the helper functions to actually perform any of the
+ * IOCTL functions.
+ *
+ */
 int Arduino::ioctl(int cmd, unsigned long arg) {
   int ret = PX4_OK;
   switch (cmd) {
@@ -182,6 +226,13 @@ int Arduino::ioctl(int cmd, unsigned long arg) {
   return ret;
 }
 
+/**
+ * Probe implementation for the Arduino driver (stub)
+ *
+ * Does a reset followed by a health check to check the
+ * initial functionality of the Arduino.
+ *
+ */
 int Arduino::probe() {
   int result1 = ioctl(ARDUINO_IOCTL_RESET, 0);
   if (result1 != PX4_OK) {
@@ -194,6 +245,14 @@ int Arduino::probe() {
   return PX4_OK;
 }
 
+/**
+ * Helper method to send a reset command to the Arduino (stub)
+ *
+ * This method should send a reset command and if it appears
+ * to be successful, return PX4_OK.  If the reset doesn't
+ * appear to have worked, return an error code.
+ *
+ */
 int Arduino::_reset() {
   int ret = PX4_OK;
   uint8_t wire_cmd = ARDUINO_IOCTL_RESET;
@@ -204,6 +263,15 @@ int Arduino::_reset() {
   return ret;
 }
 
+/**
+ * Helper method to do a health check of the Arduino (stub)
+ *
+ * This method should send a command over the wire instructing
+ * the Arduino to send a health report (probably just a uint8_t)
+ * back on the next request from the driver.  Then the driver
+ * should read that health report and determine the status of the Arduino.
+ *
+ */
 int Arduino::_self_check() {
   int ret = PX4_OK;
   uint8_t wire_cmd = ARDUINO_IOCTL_SELF_CHECK;
@@ -214,6 +282,9 @@ int Arduino::_self_check() {
   return ret;
 }
 
-int arduino_main(int argc, char *argv[]) {
-    return 0;
-}
+/**
+ * Main method for the Arduino driver because apparently drivers
+ * have main methods.
+ *
+ */
+int arduino_main(int argc, char *argv[]) { return 0; }
