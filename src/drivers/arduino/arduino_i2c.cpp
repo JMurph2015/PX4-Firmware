@@ -37,42 +37,52 @@
  * I2C interface for a custom Arduino data collection solution
  */
 
-/* XXX trim includes */
 #include <px4_config.h>
 #include <px4_defines.h>
 
-#include <drivers/device/i2c.h>
+#include <stdint.h>
 
+#include <drivers/device/i2c.h>
+#include <drivers/drv_hrt.h>
+
+#include <uORB/topics/debug_key_value.h>
+#include <uORB/uORB.h>
+
+/* Imports used in other drivers that were unnecessary so far
 #include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include <arch/board/board.h>
 
-#include <drivers/drv_hrt.h>
 #include <drivers/drv_orb_dev.h>
 #include <drivers/drv_sensor.h>
 #include <sys/ioctl.h>
 
-#include <uORB/topics/debug_key_value.h>
 #include <uORB/topics/debug_value.h>
 #include <uORB/topics/debug_vect.h>
-#include <uORB/uORB.h>
 
 #include "board_config.h"
 
-// #include <drivers/device/ringbuffer.h>
+// This include was in the drivers that used a ring buffer, but
+// it's unclear if this driver needs a ring buffer.
+#include <drivers/device/ringbuffer.h>
+*/
 
+// Arduino is on the I2C bus
 #define ARDUINO_BUS PX4_I2C_BUS_EXPANSION
+// Make a couple of valid address for Arduinos to be.  Unclear
+// if this is the right way to go about that.
 #define ARDUINO_ADDR0 0x72
 #define ARDUINO_ADDR1 0x73
 
+// Define IOCTL commands
 #define ARDUINO_IOCTL_RESET 0x0
 #define ARDUINO_IOCTL_SELF_CHECK 0x1
 
+// Define a device path.  Do there need to be more?
 #define ARDUINO_BASE_PATH "/dev/arduino"
 
 /**
@@ -81,8 +91,7 @@
  *
  * This is to allow custom sensor integration like PWM RPM
  * sensors that are trivial to read from an Arduino but
- * hard to read into a PixHawk
- *
+ * hard to read into a Pixhawk
  */
 class Arduino : public device::I2C {
 public:
@@ -110,7 +119,6 @@ extern "C" __EXPORT int arduino_main(int argc, char *argv[]);
  *
  * All this really does is set the variables and call the I2C
  * constructor
- *
  */
 Arduino::Arduino(int address)
     : I2C("Arduino", ARDUINO_BASE_PATH, ARDUINO_BUS, address, 400000),
@@ -121,7 +129,6 @@ Arduino::Arduino(int address)
  * I2C::init()
  *
  * This shouldn't be doing anything fancy for the time being.
- *
  */
 int Arduino::init() {
   if (_orb_handle == nullptr) {
@@ -141,7 +148,6 @@ int Arduino::init() {
  * and reports these via debug messages.  It will probably
  * need to have some extra logic to prime the Arduino for reading
  * measurements as opposed to health check etc.
- *
  */
 ssize_t Arduino::read(char *buffer, size_t buflen) {
   uint8_t raw_vals[8] = {0};
@@ -209,7 +215,6 @@ ssize_t Arduino::read(char *buffer, size_t buflen) {
  * This method mostly just matches on command inputs and
  * uses the helper functions to actually perform any of the
  * IOCTL functions.
- *
  */
 int Arduino::ioctl(int cmd, unsigned long arg) {
   int ret = PX4_OK;
@@ -231,7 +236,6 @@ int Arduino::ioctl(int cmd, unsigned long arg) {
  *
  * Does a reset followed by a health check to check the
  * initial functionality of the Arduino.
- *
  */
 int Arduino::probe() {
   int result1 = ioctl(ARDUINO_IOCTL_RESET, 0);
@@ -251,7 +255,6 @@ int Arduino::probe() {
  * This method should send a reset command and if it appears
  * to be successful, return PX4_OK.  If the reset doesn't
  * appear to have worked, return an error code.
- *
  */
 int Arduino::_reset() {
   int ret = PX4_OK;
@@ -270,7 +273,6 @@ int Arduino::_reset() {
  * the Arduino to send a health report (probably just a uint8_t)
  * back on the next request from the driver.  Then the driver
  * should read that health report and determine the status of the Arduino.
- *
  */
 int Arduino::_self_check() {
   int ret = PX4_OK;
@@ -285,6 +287,5 @@ int Arduino::_self_check() {
 /**
  * Main method for the Arduino driver because apparently drivers
  * have main methods.
- *
  */
 int arduino_main(int argc, char *argv[]) { return 0; }
