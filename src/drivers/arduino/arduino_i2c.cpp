@@ -39,6 +39,7 @@
 
 #include <px4_config.h>
 #include <px4_defines.h>
+#include <px4_getopt.h>
 #include <px4_workqueue.h>
 
 #include <stdint.h>
@@ -98,7 +99,7 @@
 class Arduino : public device::I2C {
 public:
   Arduino(int address = ARDUINO_ADDR0);
-  virtual ~Arduino() = default;
+  virtual ~Arduino();
 
   virtual int init();
   virtual ssize_t read(char *buffer, size_t buflen);
@@ -131,7 +132,19 @@ extern "C" __EXPORT int arduino_main(int argc, char *argv[]);
  */
 Arduino::Arduino(int address)
     : I2C("Arduino", ARDUINO_BASE_PATH, ARDUINO_BUS, address, 400000),
-      _orb_handle(nullptr) {}
+      _orb_handle(nullptr), _conversion_interval(250000) {
+  memset(&_work, 0, sizeof(_work));
+}
+
+Arduino::~Arduino() {
+  // Stop scheduled/scheduling work
+  _stop();
+
+  // Unadvertise from uOrb
+  if (_orb_handle != nullptr) {
+    orb_unadvertise(_orb_handle);
+  }
+}
 
 /**
  * This initializes the driver by advertising on uOrb and calling
@@ -147,6 +160,9 @@ int Arduino::init() {
   if (_orb_handle == nullptr) {
     return PX4_ERROR;
   }
+
+  _start();
+
   return I2C::init();
 }
 
@@ -305,7 +321,72 @@ int Arduino::_self_check() {
   return ret;
 }
 
-int Arduino::_collect() { return PX4_OK; }
+int Arduino::_collect() {
+  uint8_t raw_vals[8] = {0};
+  int ret = transfer(nullptr, 0, &raw_vals[0], 4 * sizeof(float));
+
+  // This is a dirty hack to facilitate transferring floats over
+  // an iterface that works on bytes.  The float array is just
+  // cast to a byte array and set over the wire where it is
+  // then cast back into a float array from a byte array.
+  float *vals = (float *)raw_vals;
+
+  if (ret < 0) {
+    DEVICE_DEBUG("error reading from sensor: %d", ret);
+    return ret;
+  }
+
+  uint64_t timestamp_us = hrt_absolute_time();
+  uint32_t timestamp_ms = timestamp_us / 1000;
+
+  debug_key_value_s report0 = {
+      timestamp_us, // Timestamp in microseconds
+      timestamp_ms, // Timestamp in milliseconds
+      vals[0],      // Value
+      "rpm0",       // Key
+  };
+
+  debug_key_value_s report1 = {
+      timestamp_us, // Timestamp in microseconds
+      timestamp_ms, // Timestamp in milliseconds
+      vals[1],      // Value
+      "rpm1",       // Key
+  };
+
+  debug_key_value_s report2 = {
+      timestamp_us, // Timestamp in microseconds
+      timestamp_ms, // Timestamp in milliseconds
+      vals[2],      // Value
+      "temp0",      // Key
+  };
+
+  debug_key_value_s report3 = {
+      timestamp_us, // Timestamp in microseconds
+      timestamp_ms, // Timestamp in milliseconds
+      vals[3],      // Value
+      "temp1",      // Key
+  };
+
+  // Send the measurements out over uOrb to get included in the
+  // logs and sent over Mavlink to the ground.
+  if (_orb_handle != nullptr) {
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report0);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
+  } else {
+    _orb_handle = orb_advertise(ORB_ID(debug_key_value), &report0);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
+  }
+
+  // If we've made it to here, then nothing has gone wrong and
+  // it should return PX4_OK
+  ret = PX4_OK;
+
+  return ret;
+}
 
 void Arduino::_start() {
   work_queue(HPWORK, &_work, (worker_t)&Arduino::_cycle_trampoline, this,
@@ -334,4 +415,23 @@ void Arduino::_cycle_trampoline(void *arg) {
  * Main method for the Arduino driver because apparently drivers
  * have main methods.
  */
-int arduino_main(int argc, char *argv[]) { return 0; }
+int arduino_main(int argc, char *argv[]) {
+    int ch;
+    int myoptind = 1;
+    const char *myoptarg = nullptr;
+
+    while ((ch = px4_getopt(argc, argv, "R:", &myoptind, &myoptarg)) != EOF) {
+        switch (ch) {
+            case 'R':
+                break;
+            default:
+                PX4_WARN("Unknown option!");
+                return -1;
+        }
+    }
+    if (myoptind >= argc) {
+        PX4_ERR("unrecognized command, try 'start', 'test', 'reset' or 'info'");
+        return -1;
+    }
+    return 0;
+}
