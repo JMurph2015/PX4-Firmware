@@ -39,8 +39,10 @@
 
 #include <px4_config.h>
 #include <px4_defines.h>
+#include <px4_workqueue.h>
 
 #include <stdint.h>
+#include <string.h>
 
 #include <drivers/device/i2c.h>
 #include <drivers/drv_hrt.h>
@@ -107,9 +109,16 @@ protected:
 
 private:
   orb_advert_t _orb_handle;
+  work_s _work;
+  float _conversion_interval;
 
   int _reset();
   int _self_check();
+  int _collect();
+  void _start();
+  void _stop();
+  void _cycle();
+  static void _cycle_trampoline(void *arg);
 };
 
 extern "C" __EXPORT int arduino_main(int argc, char *argv[]);
@@ -150,6 +159,7 @@ int Arduino::init() {
  * measurements as opposed to health check etc.
  */
 ssize_t Arduino::read(char *buffer, size_t buflen) {
+  int count = buflen / (4 * sizeof(float));
   uint8_t raw_vals[8] = {0};
   int ret = transfer(nullptr, 0, &raw_vals[0], 4 * sizeof(float));
 
@@ -195,15 +205,26 @@ ssize_t Arduino::read(char *buffer, size_t buflen) {
       "temp1",      // Key
   };
 
-  // report.timestamp = hrt_absolute_time();
+  if (count > 0) {
+    memcpy(buffer, vals, 4 * sizeof(float));
+  }
 
+  // Send the measurements out over uOrb to get included in the
+  // logs and sent over Mavlink to the ground.
   if (_orb_handle != nullptr) {
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report0);
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
+  } else {
+    _orb_handle = orb_advertise(ORB_ID(debug_key_value), &report0);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
   }
 
+  // If we've made it to here, then nothing has gone wrong and
+  // it should return PX4_OK
   ret = PX4_OK;
 
   return ret;
@@ -284,6 +305,31 @@ int Arduino::_self_check() {
   return ret;
 }
 
+int Arduino::_collect() { return PX4_OK; }
+
+void Arduino::_start() {
+  work_queue(HPWORK, &_work, (worker_t)&Arduino::_cycle_trampoline, this,
+             USEC2TICK(_conversion_interval));
+}
+
+void Arduino::_stop() { work_cancel(HPWORK, &_work); }
+
+void Arduino::_cycle() {
+  if (PX4_OK != _collect()) {
+    DEVICE_DEBUG("Failed to collect data!");
+    /* if error restart the measurement state machine */
+    _start();
+    return;
+  }
+
+  work_queue(HPWORK, &_work, (worker_t)&Arduino::_cycle_trampoline, this,
+             USEC2TICK(_conversion_interval));
+}
+
+void Arduino::_cycle_trampoline(void *arg) {
+  Arduino *dev = (Arduino *)arg;
+  dev->_cycle();
+}
 /**
  * Main method for the Arduino driver because apparently drivers
  * have main methods.
