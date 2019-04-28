@@ -84,9 +84,19 @@
 // Define IOCTL commands
 #define ARDUINO_IOCTL_RESET 0x0
 #define ARDUINO_IOCTL_SELF_CHECK 0x1
+#define ARDUINO_IOCTL_POLLRATE 0x2
+
+// Define wire commands
+#define ARDUINO_WIRE_RESET 0x0
+#define ARDUINO_WIRE_SELF_CHECK 0x1
+#define ARDUINO_WIRE_READ 0x02
 
 // Define a device path.  Do there need to be more?
-#define ARDUINO_BASE_PATH "/dev/arduino"
+#define ARDUINO_DEVICE_PATH0 "/dev/arduino0"
+#define ARDUINO_DEVICE_PATH1 "/dev/arduino1"
+
+#define ARDUINO_POLLRATE_MAX 20
+#define ARDUINO_POLLRATE_DEFAULT 2
 
 /**
  * A driver to collect data from an Arduino connected over
@@ -98,7 +108,7 @@
  */
 class Arduino : public device::I2C {
 public:
-  Arduino(int address = ARDUINO_ADDR0);
+  Arduino(int address, const char *path);
   virtual ~Arduino();
 
   virtual int init();
@@ -130,9 +140,9 @@ extern "C" __EXPORT int arduino_main(int argc, char *argv[]);
  * All this really does is set the variables and call the I2C
  * constructor
  */
-Arduino::Arduino(int address)
-    : I2C("Arduino", ARDUINO_BASE_PATH, ARDUINO_BUS, address, 400000),
-      _orb_handle(nullptr), _conversion_interval(250000) {
+Arduino::Arduino(int address, const char *path)
+    : I2C("Arduino", path, ARDUINO_BUS, address, 400000), _orb_handle(nullptr),
+      _conversion_interval(250000) {
   memset(&_work, 0, sizeof(_work));
 }
 
@@ -155,7 +165,7 @@ Arduino::~Arduino() {
 int Arduino::init() {
   if (_orb_handle == nullptr) {
     struct debug_key_value_s report = {};
-    _orb_handle = orb_advertise(ORB_ID(debug_key_value), &report);
+    _orb_handle = orb_advertise_queue(ORB_ID(debug_key_value), &report, 16);
   }
   if (_orb_handle == nullptr) {
     return PX4_ERROR;
@@ -177,7 +187,12 @@ int Arduino::init() {
 ssize_t Arduino::read(char *buffer, size_t buflen) {
   int count = buflen / (4 * sizeof(float));
   uint8_t raw_vals[8] = {0};
-  int ret = transfer(nullptr, 0, &raw_vals[0], 4 * sizeof(float));
+  uint8_t wire_cmd = ARDUINO_WIRE_READ;
+  int ret = transfer(&wire_cmd, 1, nullptr, 0);
+  if (ret < 0) {
+      return PX4_ERROR;
+  }
+  ret = transfer(nullptr, 0, &raw_vals[0], 4 * sizeof(float));
 
   // This is a dirty hack to facilitate transferring floats over
   // an iterface that works on bytes.  The float array is just
@@ -190,56 +205,10 @@ ssize_t Arduino::read(char *buffer, size_t buflen) {
     return ret;
   }
 
-  uint64_t timestamp_us = hrt_absolute_time();
-  uint32_t timestamp_ms = timestamp_us / 1000;
-
-  debug_key_value_s report0 = {
-      timestamp_us, // Timestamp in microseconds
-      timestamp_ms, // Timestamp in milliseconds
-      vals[0],      // Value
-      "rpm0",       // Key
-  };
-
-  debug_key_value_s report1 = {
-      timestamp_us, // Timestamp in microseconds
-      timestamp_ms, // Timestamp in milliseconds
-      vals[1],      // Value
-      "rpm1",       // Key
-  };
-
-  debug_key_value_s report2 = {
-      timestamp_us, // Timestamp in microseconds
-      timestamp_ms, // Timestamp in milliseconds
-      vals[2],      // Value
-      "temp0",      // Key
-  };
-
-  debug_key_value_s report3 = {
-      timestamp_us, // Timestamp in microseconds
-      timestamp_ms, // Timestamp in milliseconds
-      vals[3],      // Value
-      "temp1",      // Key
-  };
-
   if (count > 0) {
     memcpy(buffer, vals, 4 * sizeof(float));
   }
 
-  // Send the measurements out over uOrb to get included in the
-  // logs and sent over Mavlink to the ground.
-  if (_orb_handle != nullptr) {
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report0);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
-  } else {
-    _orb_handle = orb_advertise(ORB_ID(debug_key_value), &report0);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
-  }
-
-  // If we've made it to here, then nothing has gone wrong and
   // it should return PX4_OK
   ret = PX4_OK;
 
@@ -262,7 +231,15 @@ int Arduino::ioctl(int cmd, unsigned long arg) {
   case ARDUINO_IOCTL_SELF_CHECK:
     ret = _self_check();
     break;
+  case ARDUINO_IOCTL_POLLRATE:
+    if (arg < ARDUINO_POLLRATE_MAX) {
+        _conversion_interval = USEC2TICK(1000000 / arg);
+    } else {
+        ret = -EINVAL;
+    }
+    break;
   default:
+    ret = -EINVAL;
     break;
   }
   return ret;
@@ -289,13 +266,15 @@ int Arduino::probe() {
 /**
  * Helper method to send a reset command to the Arduino (stub)
  *
+ * TODO
+ *
  * This method should send a reset command and if it appears
  * to be successful, return PX4_OK.  If the reset doesn't
  * appear to have worked, return an error code.
  */
 int Arduino::_reset() {
   int ret = PX4_OK;
-  uint8_t wire_cmd = ARDUINO_IOCTL_RESET;
+  uint8_t wire_cmd = ARDUINO_WIRE_RESET;
   int ret2 = transfer(&wire_cmd, 1, nullptr, 0);
   if (ret2 < 0) {
     ret = PX4_ERROR;
@@ -306,6 +285,8 @@ int Arduino::_reset() {
 /**
  * Helper method to do a health check of the Arduino (stub)
  *
+ * TODO
+ *
  * This method should send a command over the wire instructing
  * the Arduino to send a health report (probably just a uint8_t)
  * back on the next request from the driver.  Then the driver
@@ -313,7 +294,7 @@ int Arduino::_reset() {
  */
 int Arduino::_self_check() {
   int ret = PX4_OK;
-  uint8_t wire_cmd = ARDUINO_IOCTL_SELF_CHECK;
+  uint8_t wire_cmd = ARDUINO_WIRE_SELF_CHECK;
   int ret2 = transfer(&wire_cmd, 1, nullptr, 0);
   if (ret2 < 0) {
     ret = PX4_ERROR;
@@ -375,7 +356,7 @@ int Arduino::_collect() {
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
   } else {
-    _orb_handle = orb_advertise(ORB_ID(debug_key_value), &report0);
+    _orb_handle = orb_advertise_queue(ORB_ID(debug_key_value), &report0, 16);
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
     orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
@@ -411,27 +392,149 @@ void Arduino::_cycle_trampoline(void *arg) {
   Arduino *dev = (Arduino *)arg;
   dev->_cycle();
 }
+
+namespace arduino {
+Arduino *ard0 = nullptr;
+Arduino *ard1 = nullptr;
+
+void start(int address);
+void stop(int address);
+void reset(int address);
+
+void start(int address) {
+  Arduino **ard = nullptr;
+  const char *dev_path = nullptr;
+  if (address == ARDUINO_ADDR0) {
+    ard = &ard0;
+    dev_path = ARDUINO_DEVICE_PATH0;
+  } else if (address == ARDUINO_ADDR1) {
+    ard = &ard1;
+    dev_path = ARDUINO_DEVICE_PATH1;
+  } else {
+    errx(1, "Driver failed to start");
+  }
+  if (*ard != nullptr) {
+    errx(1, "Already started");
+  }
+
+  *ard = new Arduino(address, dev_path);
+
+  if (*ard == nullptr) {
+    errx(1, "Driver failed to start");
+  }
+
+  if (PX4_OK != (*ard)->init()) {
+    errx(1, "Driver failed to start");
+  }
+
+  /*
+   * TODO Probably need to open the device here
+   * and do a couple IOCTL calls, but I'll fix that later
+   */
+
+  int filep = open(dev_path, O_RDONLY);
+
+  ioctl(filep, ARDUINO_IOCTL_POLLRATE, ARDUINO_POLLRATE_DEFAULT);
+
+  exit(0);
+}
+
+void stop(int address) {
+  Arduino **ard = nullptr;
+  if (address == ARDUINO_ADDR0) {
+    ard = &ard0;
+  } else if (address == ARDUINO_ADDR1) {
+    ard = &ard1;
+  } else {
+    errx(1, "Failed to stop driver");
+  }
+
+  if (*ard == nullptr) {
+    errx(1, "No driver to stop");
+  }
+
+  delete *ard;
+
+  *ard = nullptr;
+
+  exit(0);
+}
+
+void reset(int address) {
+  Arduino **ard = nullptr;
+  const char *dev_path = nullptr;
+  if (address == ARDUINO_ADDR0) {
+    ard = &ard0;
+    dev_path = ARDUINO_DEVICE_PATH0;
+  } else if (address == ARDUINO_ADDR1) {
+    ard = &ard1;
+    dev_path = ARDUINO_DEVICE_PATH1;
+  } else {
+    errx(1, "Failed to reset device.");
+  }
+
+  if (*ard == nullptr) {
+    errx(1, "No driver loaded for this device.");
+  }
+
+  // TODO Make ioctl call to reset the device
+  int filep = -1;
+  filep = open(dev_path, O_RDONLY);
+
+  if (filep < 0) {
+      errx(1, "Failed to open file descriptor");
+  }
+
+  if (ioctl(filep, ARDUINO_IOCTL_RESET, 0) < 0) {
+    ::close(filep);
+    errx(1, "Failed to reset device.");
+  }
+
+  ::close(filep);
+  exit(0);
+}
+} // namespace arduino
+
 /**
  * Main method for the Arduino driver because apparently drivers
  * have main methods.
  */
 int arduino_main(int argc, char *argv[]) {
-    int ch;
-    int myoptind = 1;
-    const char *myoptarg = nullptr;
+  int ch;
+  int myoptind = 1;
+  const char *myoptarg = nullptr;
+  int address = -1;
 
-    while ((ch = px4_getopt(argc, argv, "R:", &myoptind, &myoptarg)) != EOF) {
-        switch (ch) {
-            case 'R':
-                break;
-            default:
-                PX4_WARN("Unknown option!");
-                return -1;
-        }
+  while ((ch = px4_getopt(argc, argv, "a:", &myoptind, &myoptarg)) != EOF) {
+    switch (ch) {
+    case 'a':
+      address = (int)strtol(myoptarg, NULL, 16);
+      break;
+    default:
+      PX4_WARN("Unknown option!");
+      return -1;
     }
-    if (myoptind >= argc) {
-        PX4_ERR("unrecognized command, try 'start', 'test', 'reset' or 'info'");
-        return -1;
-    }
-    return 0;
+  }
+  if (address < 0) {
+    PX4_ERR("Failed to find address option or invalid address was parsed");
+    return -1;
+  }
+  if (myoptind >= argc) {
+    PX4_ERR("unrecognized command, try 'start', 'stop', or 'reset'");
+    return -1;
+  }
+
+  if (!strcmp(argv[myoptind], "start")) {
+    arduino::start(address);
+  }
+
+  if (!strcmp(argv[myoptind], "stop")) {
+    arduino::reset(address);
+  }
+
+  if (!strcmp(argv[myoptind], "reset")) {
+    arduino::reset(address);
+  }
+
+  return 0;
 }
