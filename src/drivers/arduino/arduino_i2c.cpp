@@ -92,6 +92,7 @@
 #define ARDUINO_WIRE_READ 0x02
 
 // Define a device path.  Do there need to be more?
+#define ARDUINO_DEVICE_BASE_PATH "/dev/arduino"
 #define ARDUINO_DEVICE_PATH0 "/dev/arduino0"
 #define ARDUINO_DEVICE_PATH1 "/dev/arduino1"
 
@@ -122,6 +123,7 @@ private:
   orb_advert_t _orb_handle;
   work_s _work;
   float _conversion_interval;
+  int _class_instance;
 
   int _reset();
   int _self_check();
@@ -170,6 +172,8 @@ int Arduino::init() {
   if (_orb_handle == nullptr) {
     return PX4_ERROR;
   }
+
+  _class_instance = register_class_devname(ARDUINO_DEVICE_BASE_PATH);
 
   _start();
 
