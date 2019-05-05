@@ -75,7 +75,7 @@
 */
 
 // Arduino is on the I2C bus
-#define ARDUINO_BUS PX4_I2C_BUS_EXPANSION
+#define ARDUINO_BUS PX4_I2C_BUS_ONBOARD
 // Make a couple of valid address for Arduinos to be.  Unclear
 // if this is the right way to go about that.
 #define ARDUINO_ADDR0 0x72
@@ -97,7 +97,7 @@
 #define ARDUINO_DEVICE_PATH1 "/dev/arduino1"
 
 #define ARDUINO_POLLRATE_MAX 20
-#define ARDUINO_POLLRATE_DEFAULT 2
+#define ARDUINO_POLLRATE_DEFAULT 5
 
 /**
  * A driver to collect data from an Arduino connected over
@@ -123,7 +123,7 @@ private:
   orb_advert_t _orb_handle;
   work_s _work;
   float _conversion_interval;
-  int _class_instance;
+  int _address;
 
   int _reset();
   int _self_check();
@@ -143,8 +143,8 @@ extern "C" __EXPORT int arduino_main(int argc, char *argv[]);
  * constructor
  */
 Arduino::Arduino(int address, const char *path)
-    : I2C("Arduino", path, ARDUINO_BUS, address, 400000), _orb_handle(nullptr),
-      _conversion_interval(250000) {
+    : I2C("Arduino", path, ARDUINO_BUS, address, 100000), _orb_handle(nullptr),
+      _conversion_interval(250000), _address(address) {
   memset(&_work, 0, sizeof(_work));
 }
 
@@ -165,19 +165,28 @@ Arduino::~Arduino() {
  * This shouldn't be doing anything fancy for the time being.
  */
 int Arduino::init() {
+  if (OK != I2C::init()) {
+      DEVICE_LOG("Failed to initialize I2C");
+      return PX4_ERROR;
+  }
+
   if (_orb_handle == nullptr) {
     struct debug_key_value_s report = {};
     _orb_handle = orb_advertise_queue(ORB_ID(debug_key_value), &report, 16);
   }
+
   if (_orb_handle == nullptr) {
+    DEVICE_DEBUG("Failed to advertise on uORB");
     return PX4_ERROR;
   }
 
-  _class_instance = register_class_devname(ARDUINO_DEVICE_BASE_PATH);
-
   _start();
 
-  return I2C::init();
+  if (_collect() != PX4_OK) {
+      return PX4_ERROR;
+  }
+
+  return PX4_OK;
 }
 
 /**
@@ -194,7 +203,7 @@ ssize_t Arduino::read(char *buffer, size_t buflen) {
   uint8_t wire_cmd = ARDUINO_WIRE_READ;
   int ret = transfer(&wire_cmd, 1, nullptr, 0);
   if (ret < 0) {
-      return PX4_ERROR;
+    return PX4_ERROR;
   }
   ret = transfer(nullptr, 0, &raw_vals[0], 4 * sizeof(float));
 
@@ -237,9 +246,9 @@ int Arduino::ioctl(int cmd, unsigned long arg) {
     break;
   case ARDUINO_IOCTL_POLLRATE:
     if (arg < ARDUINO_POLLRATE_MAX) {
-        _conversion_interval = USEC2TICK(1000000 / arg);
+      _conversion_interval = USEC2TICK(1000000 / arg);
     } else {
-        ret = -EINVAL;
+      ret = -EINVAL;
     }
     break;
   default:
@@ -256,6 +265,8 @@ int Arduino::ioctl(int cmd, unsigned long arg) {
  * initial functionality of the Arduino.
  */
 int Arduino::probe() {
+  return OK;
+  /*
   int result1 = ioctl(ARDUINO_IOCTL_RESET, 0);
   if (result1 != PX4_OK) {
     return result1;
@@ -265,6 +276,7 @@ int Arduino::probe() {
     return result2;
   }
   return PX4_OK;
+  */
 }
 
 /**
@@ -307,63 +319,89 @@ int Arduino::_self_check() {
 }
 
 int Arduino::_collect() {
-  uint8_t raw_vals[8] = {0};
-  int ret = transfer(nullptr, 0, &raw_vals[0], 4 * sizeof(float));
-
+  uint8_t raw_vals[4*sizeof(float)] = {1};
   // This is a dirty hack to facilitate transferring floats over
   // an iterface that works on bytes.  The float array is just
   // cast to a byte array and set over the wire where it is
   // then cast back into a float array from a byte array.
+  int ret = transfer(nullptr, 0, raw_vals, 4 * sizeof(float));
+
   float *vals = (float *)raw_vals;
 
-  if (ret < 0) {
-    DEVICE_DEBUG("error reading from sensor: %d", ret);
+  if (ret != PX4_OK) {
+    DEVICE_LOG("error reading from sensor: %d", ret);
     return ret;
   }
 
   uint64_t timestamp_us = hrt_absolute_time();
   uint32_t timestamp_ms = timestamp_us / 1000;
+  debug_key_value_s reports[4];
 
-  debug_key_value_s report0 = {
-      timestamp_us, // Timestamp in microseconds
-      timestamp_ms, // Timestamp in milliseconds
-      vals[0],      // Value
-      "rpm0",       // Key
-  };
+  if (_address == ARDUINO_ADDR0) {
+    reports[0] = (debug_key_value_s) {
+        timestamp_us,
+        timestamp_ms,
+        vals[0],
+        "ard0rpm0",
+    };
+    reports[1] = (debug_key_value_s) {
+        timestamp_us,
+        timestamp_ms,
+        vals[1],
+        "ard0rpm1",
+    };
+    reports[2] = (debug_key_value_s) {
+        timestamp_us,
+        timestamp_ms,
+        vals[2],
+        "ard0temp0",
+    };
+    reports[3] = (debug_key_value_s) {
+        timestamp_us,
+        timestamp_ms,
+        vals[3],
+        "ard0temp1",
+    };
+  } else {
+    reports[0] = (debug_key_value_s) {
+        timestamp_us,
+        timestamp_ms,
+        vals[0],
+        "ard1rpm0",
+    };
+    reports[1] = (debug_key_value_s) {
+        timestamp_us,
+        timestamp_ms,
+        vals[1],
+        "ard1rpm1",
+    };
+    reports[2] = (debug_key_value_s) {
+        timestamp_us,
+        timestamp_ms,
+        vals[2],
+        "ard1temp0",
+    };
+    reports[3] = (debug_key_value_s) {
+        timestamp_us,
+        timestamp_ms,
+        vals[3],
+        "ard1temp1",
+    };
 
-  debug_key_value_s report1 = {
-      timestamp_us, // Timestamp in microseconds
-      timestamp_ms, // Timestamp in milliseconds
-      vals[1],      // Value
-      "rpm1",       // Key
-  };
-
-  debug_key_value_s report2 = {
-      timestamp_us, // Timestamp in microseconds
-      timestamp_ms, // Timestamp in milliseconds
-      vals[2],      // Value
-      "temp0",      // Key
-  };
-
-  debug_key_value_s report3 = {
-      timestamp_us, // Timestamp in microseconds
-      timestamp_ms, // Timestamp in milliseconds
-      vals[3],      // Value
-      "temp1",      // Key
-  };
+  }
 
   // Send the measurements out over uOrb to get included in the
   // logs and sent over Mavlink to the ground.
   if (_orb_handle != nullptr) {
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report0);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &reports[0]);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &reports[1]);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &reports[2]);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &reports[3]);
   } else {
-    _orb_handle = orb_advertise_queue(ORB_ID(debug_key_value), &report0, 16);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report1);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report2);
-    orb_publish(ORB_ID(debug_key_value), _orb_handle, &report3);
+    _orb_handle = orb_advertise_queue(ORB_ID(debug_key_value), &reports[0], 16);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &reports[1]);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &reports[2]);
+    orb_publish(ORB_ID(debug_key_value), _orb_handle, &reports[3]);
   }
 
   // If we've made it to here, then nothing has gone wrong and
@@ -374,6 +412,7 @@ int Arduino::_collect() {
 }
 
 void Arduino::_start() {
+  DEVICE_LOG("Starting Arduino work");
   work_queue(HPWORK, &_work, (worker_t)&Arduino::_cycle_trampoline, this,
              USEC2TICK(_conversion_interval));
 }
@@ -381,8 +420,9 @@ void Arduino::_start() {
 void Arduino::_stop() { work_cancel(HPWORK, &_work); }
 
 void Arduino::_cycle() {
+  DEVICE_LOG("Running Arduino work");
   if (PX4_OK != _collect()) {
-    DEVICE_DEBUG("Failed to collect data!");
+    DEVICE_LOG("Failed to collect data!");
     /* if error restart the measurement state machine */
     _start();
     return;
@@ -415,7 +455,7 @@ void start(int address) {
     ard = &ard1;
     dev_path = ARDUINO_DEVICE_PATH1;
   } else {
-    errx(1, "Driver failed to start");
+    errx(1, "Driver failed to start, not one of the supported addresses");
   }
   if (*ard != nullptr) {
     errx(1, "Already started");
@@ -424,11 +464,11 @@ void start(int address) {
   *ard = new Arduino(address, dev_path);
 
   if (*ard == nullptr) {
-    errx(1, "Driver failed to start");
+    errx(1, "Driver failed to start, Arduino constructor failed.");
   }
 
-  if (PX4_OK != (*ard)->init()) {
-    errx(1, "Driver failed to start");
+  if (OK != (*ard)->init()) {
+    errx(1, "Driver failed to start, Arduino init failed.");
   }
 
   /*
@@ -486,7 +526,7 @@ void reset(int address) {
   filep = open(dev_path, O_RDONLY);
 
   if (filep < 0) {
-      errx(1, "Failed to open file descriptor");
+    errx(1, "Failed to open file descriptor");
   }
 
   if (ioctl(filep, ARDUINO_IOCTL_RESET, 0) < 0) {
@@ -533,7 +573,7 @@ int arduino_main(int argc, char *argv[]) {
   }
 
   if (!strcmp(argv[myoptind], "stop")) {
-    arduino::reset(address);
+    arduino::stop(address);
   }
 
   if (!strcmp(argv[myoptind], "reset")) {

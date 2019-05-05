@@ -147,6 +147,21 @@ then
 			mpu9250 -R 14 start
 		fi
 
+                # start Arduino sensors if relevant
+                if param compare SENS_EN_ARDUINO 3
+                then
+                        arduino -a 0x72 start
+                        arduino -a 0x73 start
+                else
+                    if param compare SENS_EN_ARDUINO 1
+                        arduino -a 0x72 start
+                    else
+                        if param compare SENS_EN_ARDUINO 2
+                            arduino -a 0x73 start
+                        fi
+                    fi
+                fi
+
 	else
 		# $BOARD_FMUV3 == 0 -> FMUv2
 

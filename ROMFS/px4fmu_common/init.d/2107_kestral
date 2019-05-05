@@ -1,0 +1,50 @@
+#!nsh
+#
+# @name Kestral
+#
+# @type Standard Plane
+# @class Plane
+#
+# @output MAIN1 aileron
+# @output MAIN2 elevator
+# @output MAIN3 throttle
+# @output MAIN4 rudder
+# @output MAIN5 flaps
+# @output MAIN6 gear
+#
+# @output AUX1 feed-through of RC AUX1 channel
+# @output AUX2 feed-through of RC AUX2 channel
+# @output AUX3 feed-through of RC AUX3 channel
+#
+# @maintainer Lorenz Meier <lorenz@px4.io>
+#
+
+sh /etc/init.d/rc.fw_defaults
+
+set MAV_TYPE 1
+
+set MIXER kestral
+set MIXER_AUX kestral
+
+set PWM_RATE 400
+set PWM_AUX_RATE 400
+set PWM_OUT 12345678
+set PWM_AUX_OUT 12345
+set PWM_DISARMED 900
+set PWM_AUX_DISARMED 900
+
+
+if [ $AUTOCNF == yes ]
+then
+    param set RC_MAP_PITCH 1
+    param set RC_MAP_YAW 3
+    param set RC_MAP_ROLL 4
+    param set RC_MAP_FLAPS 6
+    param set RC_MAP_THROTTLE 11
+    param set RC_MAP_AUX1 9
+    param set RC_MAP_AUX2 10
+    param set RC_MAP_AUX3 12
+fi
+
+# rate must be set by group (see pwm info)
+# throttle is in the same group as servos

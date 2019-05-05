@@ -57,6 +57,8 @@ px4_add_romfs_files(
 	hexa_+.main.mix
 	hexa_x.main.mix
 	IO_pass.main.mix
+        kestral.aux.mix
+        kestral.main.mix
 	mount.aux.mix
 	mount_legs.aux.mix
 	ocpoc_quad_x.main.mix
